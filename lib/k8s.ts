@@ -1,7 +1,8 @@
+import https from "https";
 import { existsSync, readFileSync } from "fs";
 
 const TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
-const API_SERVER = "https://kubernetes.default.svc";
+const CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
 
 export interface K8sIngress {
   metadata: { name: string; namespace: string };
@@ -38,48 +39,75 @@ export interface K8sPod {
   };
 }
 
-function isInCluster(): boolean {
+export function isInCluster(): boolean {
   return existsSync(TOKEN_PATH);
 }
 
-function getToken(): string {
-  return readFileSync(TOKEN_PATH, "utf-8").trim();
-}
+function k8sRequest<T>(path: string): Promise<T | null> {
+  return new Promise((resolve) => {
+    if (!isInCluster()) {
+      resolve(null);
+      return;
+    }
+    try {
+      const host = process.env.KUBERNETES_SERVICE_HOST ?? "kubernetes.default.svc";
+      const port = Number(process.env.KUBERNETES_SERVICE_PORT ?? 443);
+      const token = readFileSync(TOKEN_PATH, "utf-8").trim();
+      const ca = readFileSync(CA_PATH);
 
-async function k8sFetch<T>(path: string): Promise<T | null> {
-  if (!isInCluster()) return null;
-  try {
-    const res = await fetch(`${API_SERVER}${path}`, {
-      headers: {
-        Authorization: `Bearer ${getToken()}`,
-        Accept: "application/json",
-      },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      cache: "no-store" as any,
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
+      const req = https.request(
+        {
+          hostname: host,
+          port,
+          path,
+          method: "GET",
+          ca,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/json",
+          },
+        },
+        (res) => {
+          let body = "";
+          res.on("data", (chunk) => { body += chunk; });
+          res.on("end", () => {
+            if (res.statusCode && res.statusCode < 400) {
+              try {
+                resolve(JSON.parse(body) as T);
+              } catch {
+                resolve(null);
+              }
+            } else {
+              resolve(null);
+            }
+          });
+        }
+      );
+      req.on("error", () => resolve(null));
+      req.setTimeout(10_000, () => { req.destroy(); resolve(null); });
+      req.end();
+    } catch {
+      resolve(null);
+    }
+  });
 }
 
 export async function listIngresses(): Promise<K8sIngress[]> {
-  const data = await k8sFetch<{ items: K8sIngress[] }>(
+  const data = await k8sRequest<{ items: K8sIngress[] }>(
     "/apis/networking.k8s.io/v1/ingresses"
   );
   return data?.items ?? [];
 }
 
 export async function listDeployments(namespace: string): Promise<K8sDeployment[]> {
-  const data = await k8sFetch<{ items: K8sDeployment[] }>(
+  const data = await k8sRequest<{ items: K8sDeployment[] }>(
     `/apis/apps/v1/namespaces/${namespace}/deployments`
   );
   return data?.items ?? [];
 }
 
 export async function listPods(namespace: string): Promise<K8sPod[]> {
-  const data = await k8sFetch<{ items: K8sPod[] }>(
+  const data = await k8sRequest<{ items: K8sPod[] }>(
     `/api/v1/namespaces/${namespace}/pods`
   );
   return data?.items ?? [];

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { listIngresses, listDeployments, listPods } from "@/lib/k8s";
+import { listIngresses, listDeployments, listPods, isInCluster } from "@/lib/k8s";
 import { checkEndpoint, EndpointResult } from "@/lib/checker";
 
 export const runtime = "nodejs";
@@ -120,6 +120,6 @@ export async function GET() {
   return NextResponse.json({
     apps,
     fetchedAt: new Date().toISOString(),
-    inCluster: relevant.length > 0 || allIngresses.length > 0,
+    inCluster: isInCluster(),
   } satisfies HealthResponse);
 }
